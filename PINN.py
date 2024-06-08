@@ -524,16 +524,22 @@ class ThetaModel:
             def output_norm_fn(theta_values):
                 new_theta_values = {}
                 for key, value in theta_values.items():
-                    min_value = norm_params[key][0]
-                    max_value = norm_params[key][1]
-                    new_theta_values[key] = (value - min_value) / (max_value - min_value) * 2 - 1
+                    if key in norm_params:
+                        min_value = norm_params[key][0]
+                        max_value = norm_params[key][1]
+                        new_theta_values[key] = (value - min_value) / (max_value - min_value) * 2 - 1
+                    else:
+                        new_theta_values[key] = value
                 return new_theta_values
             def output_unnorm_fn(theta_values):
                 new_theta_values = {}
                 for key, value in theta_values.items():
-                    min_value = norm_params[key][0]
-                    max_value = norm_params[key][1]
-                    new_theta_values[key] = (value + 1) / 2 * (max_value - min_value) + min_value
+                    if key in norm_params:
+                        min_value = norm_params[key][0]
+                        max_value = norm_params[key][1]
+                        new_theta_values[key] = (value + 1) / 2 * (max_value - min_value) + min_value
+                    else:
+                        new_theta_values[key] = value
                 return new_theta_values
             return output_norm_fn, output_unnorm_fn
     
@@ -552,12 +558,6 @@ class ThetaModel:
     def input_norm_fn(self, t):
         # to [-1, 1]
         return (t - self.T_domain[0]) / (self.T_domain[1] - self.T_domain[0]) * 2 - 1
-    
-    def output_unnorm_fn(self, theta_values):
-        return theta_values
-    
-    def output_norm_fn(self, theta_values):
-        return theta_values
 
     def parameters(self,):
         paramters = []
@@ -664,11 +664,42 @@ class MosquitoPINN(CausalTrainingGradientBalancingODePINN):
 
         return [dE_dt, dL_dt, dP_dt, dAem_dt, dAb1_dt, dAg1_dt, dAo1_dt, dAb2_dt, dAg2_dt, dAo2_dt]
 
+class InverseMosquitoThetaModel(MosquitoThetaModel):
+
+    def build_theta_model(self, **kwargs):
+        super().build_theta_model(**kwargs)
+        self.theta_model['gamma_Aem'] = LearnableVariable()
+        self.theta_model['gamma_Ab'] = LearnableVariable()
+        self.theta_model['gamma_Ao'] = LearnableVariable()
+        self.theta_model['f_E'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+        self.theta_model['f_P'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+        self.theta_model['f_L'] = LambdaLayer(lambda t: self.theta_model['f_P'](t) / 1.65)
+        self.theta_model['f_Ag'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+        self.theta_model['m_L'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+        self.theta_model['m_P'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+        self.theta_model['m_A'] = MLP(hidden_layer_sizes=(32,32,32), activation=nn.GELU(), last_activation=nn.Identity())
+
+        self.trainable_theta_keys = ['gamma_Aem', 'gamma_Ab', 'gamma_Ao', 'f_E', 'f_P', 'f_L', 'f_Ag', 'm_L', 'm_P', 'm_A']
+
+    def forward(self, t, unnormalize=False):
+        t_normed = self.input_norm_fn(t)
+        theta_values = {}
+        for key in self.theta_model.keys():
+            if key in self.trainable_theta_keys:
+                theta_values[key] = self.theta_model[key](t_normed)
+            else:
+                theta_values[key] = self.theta_model[key](t)
+        if unnormalize:
+            theta_values = self.output_unnorm_fn(theta_values)
+        return theta_values
 
 
+class InverseMosquitoPINN(MosquitoPINN):
 
-
-
+    def build_theta_model(self, **kwargs):
+        self.theta_model = InverseMosquitoThetaModel(input_norm_params=self.input_norm_params,
+                                                     output_norm_params=self.theta_norm_params,
+                                                     **kwargs)
 
 
 
